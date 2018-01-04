@@ -1,138 +1,294 @@
 pragma solidity ^0.4.16;
 
-contract token {
-    mapping (address => uint256) public balanceOf;
+contract owned {
+    address public owner;
+
+    function owned() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner {
+        require(msg.sender == owner);
+        _;
+    }
+
+    function transferOwnership(address newOwner) onlyOwner {
+        owner = newOwner;
+    }
 }
 
-contract LiquidDemocracy {
-    token public votingToken;
-    bool  underExecution;
-    address public appointee;
-    mapping (address => uint) public voterId;
-    mapping (address => uint256) public voteWeight;
+contract tokenRecipient {
+    event receivedEther(address sender, uint amount);
+    event receivedTokens(address _from, uint256 _value, address _token, bytes _extraData);
 
-    uint public delegatedPercent;
-    uint public lastWeightCalculation;
-    uint public numberOfDelegationRounds;
+    function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData){
+        Token t = Token(_token);
+        require(t.transferFrom(_from, this, _value));
+        receivedTokens(_from, _value, _token, _extraData);
+    }
 
-    uint public numberOfVotes;
-    DelegatedVote[] public delegatedVotes;
-    string public forbiddenFunction;
+    function () payable {
+        receivedEther(msg.sender, msg.value);
+    }
+}
 
-    event NewAppointee(address newAppointee, bool changed);
+interface Token {
+    function transferFrom(address _from, address _to, uint256 _value) returns (bool success);
+}
 
-    struct DelegatedVote {
-        address nominee;
+contract TimeLockMultisig is owned, tokenRecipient {
+
+    Proposal[] public proposals;
+    uint public numProposals;
+    mapping (address => uint) public memberId;
+    Member[] public members;
+    uint minimumTime = 10;
+
+    event ProposalAdded(uint proposalID, address recipient, uint amount, string description);
+    event Voted(uint proposalID, bool position, address voter, string justification);
+    event ProposalExecuted(uint proposalID, int result, uint deadline);
+    event MembershipChanged(address member, bool isMember);
+
+    struct Proposal {
+        address recipient;
+        uint amount;
+        string description;
+        bool executed;
+        int currentResult;
+        bytes32 proposalHash;
+        uint creationDate;
+        Vote[] votes;
+        mapping (address => bool) voted;
+    }
+
+    struct Member {
+        address member;
+        string name;
+        uint memberSince;
+    }
+
+    struct Vote {
+        bool inSupport;
         address voter;
+        string justification;
+    }
+
+    // Modifier that allows only shareholders to vote and create new proposals
+    modifier onlyMembers {
+        require(memberId[msg.sender] != 0);
+        _;
     }
 
     /**
      * Constructor function
+     *
+     * First time setup
      */
-    function LiquidDemocracy(
-        address votingWeightToken,
-        string forbiddenFunctionCall,
-        uint percentLossInEachRound
-    ) {
-        votingToken = token(votingWeightToken);
-        delegatedVotes.length++;
-        delegatedVotes[0] = DelegatedVote({nominee: 0, voter: 0});
-        forbiddenFunction = forbiddenFunctionCall;
-        delegatedPercent = 100 - percentLossInEachRound;
-        if (delegatedPercent > 100) delegatedPercent = 100;
+    function TimeLockMultisig(address founder, address[] initialMembers, uint minimumAmountOfMinutes) payable {
+        if (founder != 0) owner = founder;
+        if (minimumAmountOfMinutes !=0) minimumTime = minimumAmountOfMinutes;
+        // It’s necessary to add an empty first member
+        addMember(0, '');
+        // and let's add the founder, to save a step later
+        addMember(owner, 'founder');
+        changeMembers(initialMembers, true);
     }
 
     /**
-     * Vote for an address
+     * Add member
      *
-     * Send your vote weight to another address
-     *
-     * @param nominatedAddress the destination address receiving the sender's vote
+     * @param targetMember address to add as a member
+     * @param memberName label to give this member address
      */
-    function vote(address nominatedAddress) returns (uint voteIndex) {
-        if (voterId[msg.sender]== 0) {
-            voterId[msg.sender] = delegatedVotes.length;
-            numberOfVotes++;
-            voteIndex = delegatedVotes.length++;
-            numberOfVotes = voteIndex;
-        }
-        else {
-            voteIndex = voterId[msg.sender];
+    function addMember(address targetMember, string memberName) onlyOwner {
+        uint id;
+        if (memberId[targetMember] == 0) {
+            memberId[targetMember] = members.length;
+            id = members.length++;
+        } else {
+            id = memberId[targetMember];
         }
 
-        delegatedVotes[voteIndex] = DelegatedVote({nominee: nominatedAddress, voter: msg.sender});
-
-        return voteIndex;
+        members[id] = Member({member: targetMember, memberSince: now, name: memberName});
+        MembershipChanged(targetMember, true);
     }
 
     /**
-     * Perform Executive Action
+     * Remove member
      *
-     * @param target the destination address to interact with
-     * @param valueInWei the amount of ether to send along with the transaction
-     * @param bytecode the data bytecode for the transaction
+     * @param targetMember the member to remove
      */
-    function execute(address target, uint valueInWei, bytes32 bytecode) {
-        require(msg.sender == appointee                             // If caller is the current appointee,
-            && !underExecution //                                   // if the call is being executed,
-            && bytes4(bytecode) != bytes4(sha3(forbiddenFunction))  // and it's not trying to do the forbidden function
-            && numberOfDelegationRounds >= 4);                     // and delegation has been calculated enough
+    function removeMember(address targetMember) onlyOwner {
+        require(memberId[targetMember] != 0);
 
-        underExecution = true;
-        assert(target.call.value(valueInWei)(bytecode)); // Then execute the command.
-        underExecution = false;
+        for (uint i = memberId[targetMember]; i<members.length-1; i++){
+            members[i] = members[i+1];
+        }
+        delete members[members.length-1];
+        members.length--;
     }
 
     /**
-     * Calculate Votes
+     * Edit existing members
      *
-     * Go thruogh all the delegated vote logs and tally up each address's total rank
+     * @param newMembers array of addresses to update
+     * @param canVote new voting value that all the values should be set to
      */
-    function calculateVotes() returns (address winner) {
-        address currentWinner = appointee;
-        uint currentMax = 0;
-        uint weight = 0;
-        DelegatedVote storage v = delegatedVotes[0];
-
-        if (now > lastWeightCalculation + 90 minutes) {
-            numberOfDelegationRounds = 0;
-            lastWeightCalculation = now;
-
-            // Distribute the initial weight
-            for (uint i=1; i< delegatedVotes.length; i++) {
-                voteWeight[delegatedVotes[i].nominee] = 0;
-            }
-            for (i=1; i< delegatedVotes.length; i++) {
-                voteWeight[delegatedVotes[i].voter] = votingToken.balanceOf(delegatedVotes[i].voter);
-            }
+    function changeMembers(address[] newMembers, bool canVote) {
+        for (uint i = 0; i < newMembers.length; i++) {
+            if (canVote)
+                addMember(newMembers[i], '');
+            else
+                removeMember(newMembers[i]);
         }
-        else {
-            numberOfDelegationRounds++;
-            uint lossRatio = 100 * delegatedPercent ** numberOfDelegationRounds / 100 ** numberOfDelegationRounds;
-            if (lossRatio > 0) {
-                for (i=1; i< delegatedVotes.length; i++){
-                    v = delegatedVotes[i];
+    }
 
-                    if (v.nominee != v.voter && voteWeight[v.voter] > 0) {
-                        weight = voteWeight[v.voter] * lossRatio / 100;
-                        voteWeight[v.voter] -= weight;
-                        voteWeight[v.nominee] += weight;
-                    }
+    /**
+     * Add Proposal
+     *
+     * Propose to send `weiAmount / 1e18` ether to `beneficiary` for `jobDescription`. `transactionBytecode ? Contains : Does not contain` code.
+     *
+     * @param beneficiary who to send the ether to
+     * @param weiAmount amount of ether to send, in wei
+     * @param jobDescription Description of job
+     * @param transactionBytecode bytecode of transaction
+     */
+    function newProposal(
+        address beneficiary,
+        uint weiAmount,
+        string jobDescription,
+        bytes transactionBytecode
+    )
+        onlyMembers
+        returns (uint proposalID)
+    {
+        proposalID = proposals.length++;
+        Proposal storage p = proposals[proposalID];
+        p.recipient = beneficiary;
+        p.amount = weiAmount;
+        p.description = jobDescription;
+        p.proposalHash = sha3(beneficiary, weiAmount, transactionBytecode);
+        p.executed = false;
+        p.creationDate = now;
+        ProposalAdded(proposalID, beneficiary, weiAmount, jobDescription);
+        numProposals = proposalID+1;
+        vote(proposalID, true, '');
 
-                    if (numberOfDelegationRounds>3 && voteWeight[v.nominee] > currentMax) {
-                        currentWinner = v.nominee;
-                        currentMax = voteWeight[v.nominee];
-                    }
-                }
-            }
+        return proposalID;
+    }
+
+    /**
+     * Add proposal in Ether
+     *
+     * Propose to send `etherAmount` ether to `beneficiary` for `jobDescription`. `transactionBytecode ? Contains : Does not contain` code.
+     * This is a convenience function to use if the amount to be given is in round number of ether units.
+     *
+     * @param beneficiary who to send the ether to
+     * @param etherAmount amount of ether to send
+     * @param jobDescription Description of job
+     * @param transactionBytecode bytecode of transaction
+     */
+    function newProposalInEther(
+        address beneficiary,
+        uint etherAmount,
+        string jobDescription,
+        bytes transactionBytecode
+    )
+        onlyMembers
+        returns (uint proposalID)
+    {
+        return newProposal(beneficiary, etherAmount * 1 ether, jobDescription, transactionBytecode);
+    }
+
+    /**
+     * Check if a proposal code matches
+     *
+     * @param proposalNumber ID number of the proposal to query
+     * @param beneficiary who to send the ether to
+     * @param weiAmount amount of ether to send
+     * @param transactionBytecode bytecode of transaction
+     */
+    function checkProposalCode(
+        uint proposalNumber,
+        address beneficiary,
+        uint weiAmount,
+        bytes transactionBytecode
+    )
+        constant
+        returns (bool codeChecksOut)
+    {
+        Proposal storage p = proposals[proposalNumber];
+        return p.proposalHash == sha3(beneficiary, weiAmount, transactionBytecode);
+    }
+
+    /**
+     * Log a vote for a proposal
+     *
+     * Vote `supportsProposal? in support of : against` proposal #`proposalNumber`
+     *
+     * @param proposalNumber number of proposal
+     * @param supportsProposal either in favor or against it
+     * @param justificationText optional justification text
+     */
+    function vote(
+        uint proposalNumber,
+        bool supportsProposal,
+        string justificationText
+    )
+        onlyMembers
+    {
+        Proposal storage p = proposals[proposalNumber]; // Get the proposal
+        require(p.voted[msg.sender] != true);           // If has already voted, cancel
+        p.voted[msg.sender] = true;                     // Set this voter as having voted
+        if (supportsProposal) {                         // If they support the proposal
+            p.currentResult++;                          // Increase score
+        } else {                                        // If they don't
+            p.currentResult--;                          // Decrease the score
         }
 
-        if (numberOfDelegationRounds > 3) {
-            NewAppointee(currentWinner, appointee == currentWinner);
-            appointee = currentWinner;
-        }
+        // Create a log of this event
+        Voted(proposalNumber,  supportsProposal, msg.sender, justificationText);
 
-        return currentWinner;
+        // If you can execute it now, do it
+        if ( now > proposalDeadline(proposalNumber)
+            && p.currentResult > 0
+            && p.proposalHash == sha3(p.recipient, p.amount, '')
+            && supportsProposal) {
+            executeProposal(proposalNumber, '');
+        }
+    }
+
+    function proposalDeadline(uint proposalNumber) constant returns(uint deadline) {
+        Proposal storage p = proposals[proposalNumber];
+        uint factor = calculateFactor(uint(p.currentResult), (members.length - 1));
+        return p.creationDate + uint(factor * minimumTime *  1 minutes);
+    }
+
+    function calculateFactor(uint a, uint b) constant returns (uint factor) {
+        return 2**(20 - (20 * a)/b);
+    }
+
+    /**
+     * Finish vote
+     *
+     * Count the votes proposal #`proposalNumber` and execute it if approved
+     *
+     * @param proposalNumber proposal number
+     * @param transactionBytecode optional: if the transaction contained a bytecode, you need to send it
+     */
+    function executeProposal(uint proposalNumber, bytes transactionBytecode) {
+        Proposal storage p = proposals[proposalNumber];
+
+        require(now >= proposalDeadline(proposalNumber)                                         // If it is past the voting deadline
+            && p.currentResult > 0                                                              // and a minimum quorum has been reached
+            && !p.executed                                                                      // and it is not currently being executed
+            && checkProposalCode(proposalNumber, p.recipient, p.amount, transactionBytecode));  // and the supplied code matches the proposal...
+
+
+        p.executed = true;
+        assert(p.recipient.call.value(p.amount)(transactionBytecode));
+
+        // Fire Events
+        ProposalExecuted(proposalNumber, p.currentResult, proposalDeadline(proposalNumber));
     }
 }
-
