@@ -3,7 +3,7 @@ pragma solidity ^0.4.16;
 contract owned {
     address public owner;
 
-    function owned() public {
+    function owned()  public {
         owner = msg.sender;
     }
 
@@ -12,233 +12,293 @@ contract owned {
         _;
     }
 
-    function transferOwnership(address newOwner) onlyOwner public {
+    function transferOwnership(address newOwner) onlyOwner  public {
         owner = newOwner;
     }
 }
 
-interface tokenRecipient { function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) public; }
+contract tokenRecipient {
+    event receivedEther(address sender, uint amount);
+    event receivedTokens(address _from, uint256 _value, address _token, bytes _extraData);
 
-contract TokenERC20 {
-    // Public variables of the token
-    string public name;
-    string public symbol;
-    uint8 public decimals = 18;
-    // 18 decimals is the strongly suggested default, avoid changing it
-    uint256 public totalSupply;
-
-    // This creates an array with all balances
-    mapping (address => uint256) public balanceOf;
-    mapping (address => mapping (address => uint256)) public allowance;
-
-    // This generates a public event on the blockchain that will notify clients
-    event Transfer(address indexed from, address indexed to, uint256 value);
-
-    // This notifies clients about the amount burnt
-    event Burn(address indexed from, uint256 value);
-
-    /**
-     * Constrctor function
-     *
-     * Initializes contract with initial supply tokens to the creator of the contract
-     */
-    function TokenERC20(
-        uint256 initialSupply,
-        string tokenName,
-        string tokenSymbol
-    ) public {
-        totalSupply = initialSupply * 10 ** uint256(decimals);  // Update total supply with the decimal amount
-        balanceOf[msg.sender] = totalSupply;                // Give the creator all initial tokens
-        name = tokenName;                                   // Set the name for display purposes
-        symbol = tokenSymbol;                               // Set the symbol for display purposes
+    function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) public {
+        Token t = Token(_token);
+        require(t.transferFrom(_from, this, _value));
+        receivedTokens(_from, _value, _token, _extraData);
     }
 
-    /**
-     * Internal transfer, only can be called by this contract
-     */
-    function _transfer(address _from, address _to, uint _value) internal {
-        // Prevent transfer to 0x0 address. Use burn() instead
-        require(_to != 0x0);
-        // Check if the sender has enough
-        require(balanceOf[_from] >= _value);
-        // Check for overflows
-        require(balanceOf[_to] + _value > balanceOf[_to]);
-        // Save this for an assertion in the future
-        uint previousBalances = balanceOf[_from] + balanceOf[_to];
-        // Subtract from the sender
-        balanceOf[_from] -= _value;
-        // Add the same to the recipient
-        balanceOf[_to] += _value;
-        Transfer(_from, _to, _value);
-        // Asserts are used to use static analysis to find bugs in your code. They should never fail
-        assert(balanceOf[_from] + balanceOf[_to] == previousBalances);
-    }
-
-    /**
-     * Transfer tokens
-     *
-     * Send `_value` tokens to `_to` from your account
-     *
-     * @param _to The address of the recipient
-     * @param _value the amount to send
-     */
-    function transfer(address _to, uint256 _value) public {
-        _transfer(msg.sender, _to, _value);
-    }
-
-    /**
-     * Transfer tokens from other address
-     *
-     * Send `_value` tokens to `_to` in behalf of `_from`
-     *
-     * @param _from The address of the sender
-     * @param _to The address of the recipient
-     * @param _value the amount to send
-     */
-    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
-        require(_value <= allowance[_from][msg.sender]);     // Check allowance
-        allowance[_from][msg.sender] -= _value;
-        _transfer(_from, _to, _value);
-        return true;
-    }
-
-    /**
-     * Set allowance for other address
-     *
-     * Allows `_spender` to spend no more than `_value` tokens in your behalf
-     *
-     * @param _spender The address authorized to spend
-     * @param _value the max amount they can spend
-     */
-    function approve(address _spender, uint256 _value) public
-        returns (bool success) {
-        allowance[msg.sender][_spender] = _value;
-        return true;
-    }
-
-    /**
-     * Set allowance for other address and notify
-     *
-     * Allows `_spender` to spend no more than `_value` tokens in your behalf, and then ping the contract about it
-     *
-     * @param _spender The address authorized to spend
-     * @param _value the max amount they can spend
-     * @param _extraData some extra information to send to the approved contract
-     */
-    function approveAndCall(address _spender, uint256 _value, bytes _extraData)
-        public
-        returns (bool success) {
-        tokenRecipient spender = tokenRecipient(_spender);
-        if (approve(_spender, _value)) {
-            spender.receiveApproval(msg.sender, _value, this, _extraData);
-            return true;
-        }
-    }
-
-    /**
-     * Destroy tokens
-     *
-     * Remove `_value` tokens from the system irreversibly
-     *
-     * @param _value the amount of money to burn
-     */
-    function burn(uint256 _value) public returns (bool success) {
-        require(balanceOf[msg.sender] >= _value);   // Check if the sender has enough
-        balanceOf[msg.sender] -= _value;            // Subtract from the sender
-        totalSupply -= _value;                      // Updates totalSupply
-        Burn(msg.sender, _value);
-        return true;
-    }
-
-    /**
-     * Destroy tokens from other account
-     *
-     * Remove `_value` tokens from the system irreversibly on behalf of `_from`.
-     *
-     * @param _from the address of the sender
-     * @param _value the amount of money to burn
-     */
-    function burnFrom(address _from, uint256 _value) public returns (bool success) {
-        require(balanceOf[_from] >= _value);                // Check if the targeted balance is enough
-        require(_value <= allowance[_from][msg.sender]);    // Check allowance
-        balanceOf[_from] -= _value;                         // Subtract from the targeted balance
-        allowance[_from][msg.sender] -= _value;             // Subtract from the sender's allowance
-        totalSupply -= _value;                              // Update totalSupply
-        Burn(_from, _value);
-        return true;
+    function () payable  public {
+        receivedEther(msg.sender, msg.value);
     }
 }
 
-/******************************************/
-/*       ADVANCED TOKEN STARTS HERE       */
-/******************************************/
+interface Token {
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success);
+}
 
-contract MyAdvancedToken is owned, TokenERC20 {
+contract Congress is owned, tokenRecipient {
+    // Contract Variables and events
+    uint public minimumQuorum;
+    uint public debatingPeriodInMinutes;
+    int public majorityMargin;
+    Proposal[] public proposals;
+    uint public numProposals;
+    mapping (address => uint) public memberId;
+    Member[] public members;
 
-    uint256 public sellPrice;
-    uint256 public buyPrice;
+    event ProposalAdded(uint proposalID, address recipient, uint amount, string description);
+    event Voted(uint proposalID, bool position, address voter, string justification);
+    event ProposalTallied(uint proposalID, int result, uint quorum, bool active);
+    event MembershipChanged(address member, bool isMember);
+    event ChangeOfRules(uint newMinimumQuorum, uint newDebatingPeriodInMinutes, int newMajorityMargin);
 
-    mapping (address => bool) public frozenAccount;
-
-    /* This generates a public event on the blockchain that will notify clients */
-    event FrozenFunds(address target, bool frozen);
-
-    /* Initializes contract with initial supply tokens to the creator of the contract */
-    function MyAdvancedToken(
-        uint256 initialSupply,
-        string tokenName,
-        string tokenSymbol
-    ) TokenERC20(initialSupply, tokenName, tokenSymbol) public {}
-
-    /* Internal transfer, only can be called by this contract */
-    function _transfer(address _from, address _to, uint _value) internal {
-        require (_to != 0x0);                               // Prevent transfer to 0x0 address. Use burn() instead
-        require (balanceOf[_from] >= _value);               // Check if the sender has enough
-        require (balanceOf[_to] + _value > balanceOf[_to]); // Check for overflows
-        require(!frozenAccount[_from]);                     // Check if sender is frozen
-        require(!frozenAccount[_to]);                       // Check if recipient is frozen
-        balanceOf[_from] -= _value;                         // Subtract from the sender
-        balanceOf[_to] += _value;                           // Add the same to the recipient
-        Transfer(_from, _to, _value);
+    struct Proposal {
+        address recipient;
+        uint amount;
+        string description;
+        uint votingDeadline;
+        bool executed;
+        bool proposalPassed;
+        uint numberOfVotes;
+        int currentResult;
+        bytes32 proposalHash;
+        Vote[] votes;
+        mapping (address => bool) voted;
     }
 
-    /// @notice Create `mintedAmount` tokens and send it to `target`
-    /// @param target Address to receive the tokens
-    /// @param mintedAmount the amount of tokens it will receive
-    function mintToken(address target, uint256 mintedAmount) onlyOwner public {
-        balanceOf[target] += mintedAmount;
-        totalSupply += mintedAmount;
-        Transfer(0, this, mintedAmount);
-        Transfer(this, target, mintedAmount);
+    struct Member {
+        address member;
+        string name;
+        uint memberSince;
     }
 
-    /// @notice `freeze? Prevent | Allow` `target` from sending & receiving tokens
-    /// @param target Address to be frozen
-    /// @param freeze either to freeze it or not
-    function freezeAccount(address target, bool freeze) onlyOwner public {
-        frozenAccount[target] = freeze;
-        FrozenFunds(target, freeze);
+    struct Vote {
+        bool inSupport;
+        address voter;
+        string justification;
     }
 
-    /// @notice Allow users to buy tokens for `newBuyPrice` eth and sell tokens for `newSellPrice` eth
-    /// @param newSellPrice Price the users can sell to the contract
-    /// @param newBuyPrice Price users can buy from the contract
-    function setPrices(uint256 newSellPrice, uint256 newBuyPrice) onlyOwner public {
-        sellPrice = newSellPrice;
-        buyPrice = newBuyPrice;
+    // Modifier that allows only shareholders to vote and create new proposals
+    modifier onlyMembers {
+        require(memberId[msg.sender] != 0);
+        _;
     }
 
-    /// @notice Buy tokens from contract by sending ether
-    function buy() payable public {
-        uint amount = msg.value / buyPrice;               // calculates the amount
-        _transfer(this, msg.sender, amount);              // makes the transfers
+    /**
+     * Constructor function
+     */
+    function Congress (
+        uint minimumQuorumForProposals,
+        uint minutesForDebate,
+        int marginOfVotesForMajority
+    )  payable public {
+        changeVotingRules(minimumQuorumForProposals, minutesForDebate, marginOfVotesForMajority);
+        // It’s necessary to add an empty first member
+        addMember(0, "");
+        // and let's add the founder, to save a step later
+        addMember(owner, 'founder');
     }
 
-    /// @notice Sell `amount` tokens to contract
-    /// @param amount amount of tokens to be sold
-    function sell(uint256 amount) public {
-        require(this.balance >= amount * sellPrice);      // checks if the contract has enough ether to buy
-        _transfer(msg.sender, this, amount);              // makes the transfers
-        msg.sender.transfer(amount * sellPrice);          // sends ether to the seller. It's important to do this last to avoid recursion attacks
+    /**
+     * Add member
+     *
+     * Make `targetMember` a member named `memberName`
+     *
+     * @param targetMember ethereum address to be added
+     * @param memberName public name for that member
+     */
+    function addMember(address targetMember, string memberName) onlyOwner public {
+        uint id = memberId[targetMember];
+        if (id == 0) {
+            memberId[targetMember] = members.length;
+            id = members.length++;
+        }
+
+        members[id] = Member({member: targetMember, memberSince: now, name: memberName});
+        MembershipChanged(targetMember, true);
+    }
+
+    /**
+     * Remove member
+     *
+     * @notice Remove membership from `targetMember`
+     *
+     * @param targetMember ethereum address to be removed
+     */
+    function removeMember(address targetMember) onlyOwner public {
+        require(memberId[targetMember] != 0);
+
+        for (uint i = memberId[targetMember]; i<members.length-1; i++){
+            members[i] = members[i+1];
+        }
+        delete members[members.length-1];
+        members.length--;
+    }
+
+    /**
+     * Change voting rules
+     *
+     * Make so that proposals need tobe discussed for at least `minutesForDebate/60` hours,
+     * have at least `minimumQuorumForProposals` votes, and have 50% + `marginOfVotesForMajority` votes to be executed
+     *
+     * @param minimumQuorumForProposals how many members must vote on a proposal for it to be executed
+     * @param minutesForDebate the minimum amount of delay between when a proposal is made and when it can be executed
+     * @param marginOfVotesForMajority the proposal needs to have 50% plus this number
+     */
+    function changeVotingRules(
+        uint minimumQuorumForProposals,
+        uint minutesForDebate,
+        int marginOfVotesForMajority
+    ) onlyOwner public {
+        minimumQuorum = minimumQuorumForProposals;
+        debatingPeriodInMinutes = minutesForDebate;
+        majorityMargin = marginOfVotesForMajority;
+
+        ChangeOfRules(minimumQuorum, debatingPeriodInMinutes, majorityMargin);
+    }
+
+    /**
+     * Add Proposal
+     *
+     * Propose to send `weiAmount / 1e18` ether to `beneficiary` for `jobDescription`. `transactionBytecode ? Contains : Does not contain` code.
+     *
+     * @param beneficiary who to send the ether to
+     * @param weiAmount amount of ether to send, in wei
+     * @param jobDescription Description of job
+     * @param transactionBytecode bytecode of transaction
+     */
+    function newProposal(
+        address beneficiary,
+        uint weiAmount,
+        string jobDescription,
+        bytes transactionBytecode
+    )
+        onlyMembers public
+        returns (uint proposalID)
+    {
+        proposalID = proposals.length++;
+        Proposal storage p = proposals[proposalID];
+        p.recipient = beneficiary;
+        p.amount = weiAmount;
+        p.description = jobDescription;
+        p.proposalHash = keccak256(beneficiary, weiAmount, transactionBytecode);
+        p.votingDeadline = now + debatingPeriodInMinutes * 1 minutes;
+        p.executed = false;
+        p.proposalPassed = false;
+        p.numberOfVotes = 0;
+        ProposalAdded(proposalID, beneficiary, weiAmount, jobDescription);
+        numProposals = proposalID+1;
+
+        return proposalID;
+    }
+
+    /**
+     * Add proposal in Ether
+     *
+     * Propose to send `etherAmount` ether to `beneficiary` for `jobDescription`. `transactionBytecode ? Contains : Does not contain` code.
+     * This is a convenience function to use if the amount to be given is in round number of ether units.
+     *
+     * @param beneficiary who to send the ether to
+     * @param etherAmount amount of ether to send
+     * @param jobDescription Description of job
+     * @param transactionBytecode bytecode of transaction
+     */
+    function newProposalInEther(
+        address beneficiary,
+        uint etherAmount,
+        string jobDescription,
+        bytes transactionBytecode
+    )
+        onlyMembers public
+        returns (uint proposalID)
+    {
+        return newProposal(beneficiary, etherAmount * 1 ether, jobDescription, transactionBytecode);
+    }
+
+    /**
+     * Check if a proposal code matches
+     *
+     * @param proposalNumber ID number of the proposal to query
+     * @param beneficiary who to send the ether to
+     * @param weiAmount amount of ether to send
+     * @param transactionBytecode bytecode of transaction
+     */
+    function checkProposalCode(
+        uint proposalNumber,
+        address beneficiary,
+        uint weiAmount,
+        bytes transactionBytecode
+    )
+        constant public
+        returns (bool codeChecksOut)
+    {
+        Proposal storage p = proposals[proposalNumber];
+        return p.proposalHash == keccak256(beneficiary, weiAmount, transactionBytecode);
+    }
+
+    /**
+     * Log a vote for a proposal
+     *
+     * Vote `supportsProposal? in support of : against` proposal #`proposalNumber`
+     *
+     * @param proposalNumber number of proposal
+     * @param supportsProposal either in favor or against it
+     * @param justificationText optional justification text
+     */
+    function vote(
+        uint proposalNumber,
+        bool supportsProposal,
+        string justificationText
+    )
+        onlyMembers public
+        returns (uint voteID)
+    {
+        Proposal storage p = proposals[proposalNumber];         // Get the proposal
+        require(!p.voted[msg.sender]);         // If has already voted, cancel
+        p.voted[msg.sender] = true;                     // Set this voter as having voted
+        p.numberOfVotes++;                              // Increase the number of votes
+        if (supportsProposal) {                         // If they support the proposal
+            p.currentResult++;                          // Increase score
+        } else {                                        // If they don't
+            p.currentResult--;                          // Decrease the score
+        }
+
+        // Create a log of this event
+        Voted(proposalNumber,  supportsProposal, msg.sender, justificationText);
+        return p.numberOfVotes;
+    }
+
+    /**
+     * Finish vote
+     *
+     * Count the votes proposal #`proposalNumber` and execute it if approved
+     *
+     * @param proposalNumber proposal number
+     * @param transactionBytecode optional: if the transaction contained a bytecode, you need to send it
+     */
+    function executeProposal(uint proposalNumber, bytes transactionBytecode) public {
+        Proposal storage p = proposals[proposalNumber];
+
+        require(now > p.votingDeadline                                            // If it is past the voting deadline
+            && !p.executed                                                         // and it has not already been executed
+            && p.proposalHash == keccak256(p.recipient, p.amount, transactionBytecode)  // and the supplied code matches the proposal
+            && p.numberOfVotes >= minimumQuorum);                                  // and a minimum quorum has been reached...
+
+        // ...then execute result
+
+        if (p.currentResult > majorityMargin) {
+            // Proposal passed; execute the transaction
+
+            p.executed = true; // Avoid recursive calling
+            require(p.recipient.call.value(p.amount)(transactionBytecode));
+
+            p.proposalPassed = true;
+        } else {
+            // Proposal failed
+            p.proposalPassed = false;
+        }
+
+        // Fire Events
+        ProposalTallied(proposalNumber, p.currentResult, p.numberOfVotes, p.proposalPassed);
     }
 }
