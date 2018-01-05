@@ -1,6 +1,6 @@
 pragma solidity ^0.4.16;
 
-NiOcoin {
+Vandibuym {
     mapping (address => uint256) public balanceOf;
 }
 
